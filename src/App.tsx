@@ -37,12 +37,13 @@ function App() {
   const loadSearchHistory = async () => {
     try {
       setIsLoadingHistory(true);
+      setError(null);
       const { data } = await DatabaseService.getClassifications({
         limit: 50,
         sortBy: 'created_at',
         sortOrder: 'desc'
       });
-      
+
       // Convert database records to ClassificationResult format
       const convertedResults: ClassificationResult[] = data.map(record => ({
         id: record.id,
@@ -58,10 +59,12 @@ function App() {
         reasoning: record.reasoning,
         links: record.wto_links
       }));
-      
+
       setResults(convertedResults);
     } catch (err) {
       console.error('Failed to load search history:', err);
+      setError('Unable to connect to database. Please check your connection and try again.');
+      setResults([]);
     } finally {
       setIsLoadingHistory(false);
     }

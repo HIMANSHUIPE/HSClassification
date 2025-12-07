@@ -3,7 +3,21 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing Supabase environment variables. Please check your .env file.');
+}
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+  },
+  global: {
+    headers: {
+      'x-application-name': 'hs-code-classifier',
+    },
+  },
+});
 
 export interface ClassificationRecord {
   id: string;
@@ -45,23 +59,39 @@ export interface ClassificationInsert {
 }
 
 export class DatabaseService {
-  // Save a new classification to the database
-  static async saveClassification(classification: ClassificationInsert): Promise<ClassificationRecord> {
-    const { data, error } = await supabase
-      .from('classifications')
-      .insert([classification])
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Database error:', error);
-      throw new Error(`Failed to save classification: ${error.message}`);
+  private static async retryOperation<T>(
+    operation: () => Promise<T>,
+    retries = 2,
+    delay = 1000
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (retries > 0 && error instanceof Error && error.message.includes('Failed to fetch')) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.retryOperation(operation, retries - 1, delay * 1.5);
+      }
+      throw error;
     }
-
-    return data;
   }
 
-  // Get all classifications with optional filtering and sorting
+  static async saveClassification(classification: ClassificationInsert): Promise<ClassificationRecord> {
+    return this.retryOperation(async () => {
+      const { data, error } = await supabase
+        .from('classifications')
+        .insert([classification])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Database error:', error);
+        throw new Error(`Failed to save classification: ${error.message}`);
+      }
+
+      return data;
+    });
+  }
+
   static async getClassifications(options?: {
     limit?: number;
     offset?: number;
@@ -70,9 +100,10 @@ export class DatabaseService {
     sortBy?: 'created_at' | 'confidence' | 'product_name';
     sortOrder?: 'asc' | 'desc';
   }): Promise<{ data: ClassificationRecord[]; count: number }> {
-    let query = supabase
-      .from('classifications')
-      .select('*', { count: 'exact' });
+    return this.retryOperation(async () => {
+      let query = supabase
+        .from('classifications')
+        .select('*', { count: 'exact' });
 
     // Apply search filter
     if (options?.searchTerm) {
@@ -107,14 +138,15 @@ export class DatabaseService {
       query = query.range(options.offset, options.offset + (options.limit || 50) - 1);
     }
 
-    const { data, error, count } = await query;
+      const { data, error, count } = await query;
 
-    if (error) {
-      console.error('Database error:', error);
-      throw new Error(`Failed to fetch classifications: ${error.message}`);
-    }
+      if (error) {
+        console.error('Database error:', error);
+        throw new Error(`Failed to fetch classifications: ${error.message}`);
+      }
 
-    return { data: data || [], count: count || 0 };
+      return { data: data || [], count: count || 0 };
+    });
   }
 
   // Get a specific classification by ID
