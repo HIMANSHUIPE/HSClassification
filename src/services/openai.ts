@@ -1,10 +1,3 @@
-import OpenAI from 'openai';
-
-const openai = new OpenAI({
-  apiKey: import.meta.env.VITE_OPENAI_API_KEY,
-  dangerouslyAllowBrowser: true
-});
-
 export interface HSCodeClassification {
   hsCode: string;
   chapter: string;
@@ -26,12 +19,14 @@ export interface CompanyProductAnalysis {
   riskLevel: 'Low' | 'Medium' | 'High';
 }
 
+const EDGE_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/classify-product`;
+
 export async function classifyProduct(
-  productName: string, 
+  productName: string,
   customerName?: string
 ): Promise<HSCodeClassification> {
   const prompt = `
-You are an expert in international trade and HS (Harmonized System) code classification. 
+You are an expert in international trade and HS (Harmonized System) code classification.
 Analyze the following product and provide accurate HS code classification.
 
 Product: ${productName}
@@ -59,35 +54,38 @@ Be precise and conservative with confidence scores. If uncertain, explain why in
 `;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-4',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a professional HS code classification expert with deep knowledge of international trade regulations and the Harmonized System nomenclature.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      max_tokens: parseInt(import.meta.env.VITE_OPENAI_MAX_TOKENS) || 1000,
-      temperature: 0.1, // Low temperature for consistent, factual responses
+    const response = await fetch(EDGE_FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({
+        question: prompt,
+        type: 'followup'
+      }),
     });
 
-    const response = completion.choices[0]?.message?.content;
-    if (!response) {
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Classification failed');
+    }
+
+    const data = await response.json();
+    const answer = data.answer;
+
+    if (!answer) {
       throw new Error('No response from OpenAI');
     }
 
     // Parse JSON response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    const jsonMatch = answer.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('Invalid JSON response from OpenAI');
     }
 
     const classification: HSCodeClassification = JSON.parse(jsonMatch[0]);
-    
+
     // Validate required fields
     if (!classification.hsCode || !classification.chapter || !classification.description) {
       throw new Error('Incomplete classification data from OpenAI');
@@ -130,34 +128,37 @@ Focus on the company's primary commercial products and their trade classificatio
 `;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-4',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert in international trade, company analysis, and HS code classification with access to comprehensive knowledge of major companies and their product portfolios.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      max_tokens: parseInt(import.meta.env.VITE_OPENAI_MAX_TOKENS) || 1000,
-      temperature: 0.2,
+    const response = await fetch(EDGE_FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({
+        question: prompt,
+        type: 'followup'
+      }),
     });
 
-    const response = completion.choices[0]?.message?.content;
-    if (!response) {
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Company analysis failed');
+    }
+
+    const data = await response.json();
+    const answer = data.answer;
+
+    if (!answer) {
       throw new Error('No response from OpenAI');
     }
 
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    const jsonMatch = answer.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error('Invalid JSON response from OpenAI');
     }
 
     const analysis: CompanyProductAnalysis = JSON.parse(jsonMatch[0]);
-    
+
     if (!analysis.products || !Array.isArray(analysis.products) || analysis.products.length === 0) {
       throw new Error('Invalid company analysis data from OpenAI');
     }
