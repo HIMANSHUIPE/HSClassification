@@ -4,6 +4,8 @@ import { Globe } from 'lucide-react';
 interface LeftSidebarProps {
   productInput: string;
   setProductInput: (value: string) => void;
+  customerName: string;
+  setCustomerName: (value: string) => void;
   selectedCountry: string;
   setSelectedCountry: (value: string) => void;
   activeModes: {
@@ -50,6 +52,8 @@ const EXAMPLES = [
 export default function LeftSidebar({
   productInput,
   setProductInput,
+  customerName,
+  setCustomerName,
   selectedCountry,
   setSelectedCountry,
   activeModes,
@@ -84,6 +88,20 @@ export default function LeftSidebar({
       </div>
 
       <div className="p-6 space-y-4 flex-1">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Customer name (optional)
+          </label>
+          <input
+            type="text"
+            value={customerName}
+            onChange={(e) => setCustomerName(e.target.value)}
+            placeholder="e.g., Acme Corp, ABC Industries"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+            disabled={isLoading}
+          />
+        </div>
+
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Product specification
