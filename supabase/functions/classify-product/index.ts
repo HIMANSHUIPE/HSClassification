@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import OpenAI from "npm:openai@4.73.1";
+import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,9 +23,120 @@ interface ClassificationResult {
   country_code: string | null;
   alternatives: Array<{ code: string; reason: string; conf: number }>;
   gri_steps: Array<{ rule: string; title: string; verdict: string }>;
-  duties: Array<{ country: string; rate: string; note?: string | null }>;
+  duties: Array<{ country: string; rate: string; note?: string | null; verified?: boolean }>;
   risks: Array<{ icon: string; text: string; level: 'low' | 'medium' | 'high' }>;
   similar: Array<{ code: string; desc: string }>;
+}
+
+function extractCountryCode(countryString: string): string {
+  if (countryString.includes('USA')) return 'USA';
+  if (countryString.includes('EU')) return 'EU';
+  if (countryString.includes('India')) return 'IN';
+  if (countryString.includes('China')) return 'CN';
+  if (countryString.includes('UK') || countryString.includes('GB')) return 'GB';
+  return 'USA';
+}
+
+function formatRate(rate: number, unit: string): string {
+  if (unit === '%') return `${rate}%`;
+  return `${rate} ${unit}`;
+}
+
+async function fetchTariffRate(
+  supabase: any,
+  hsCode: string,
+  origin: string,
+  destination: string
+): Promise<any> {
+  try {
+    const cleanCode = hsCode.replace(/\./g, '');
+
+    // Check cache first
+    const { data: cached } = await supabase
+      .from('tariff_rates')
+      .select('*')
+      .eq('hs_code', cleanCode)
+      .eq('country_origin', origin)
+      .eq('country_destination', destination)
+      .order('last_verified', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (cached) {
+      const verifiedDate = new Date(cached.last_verified);
+      const now = new Date();
+      const daysSince = (now.getTime() - verifiedDate.getTime()) / (1000 * 60 * 60 * 24);
+
+      if (daysSince < 30) {
+        return {
+          dutyRate: parseFloat(cached.duty_rate),
+          rateUnit: cached.rate_unit,
+          source: cached.source,
+          isVerified: true
+        };
+      }
+    }
+
+    // Fetch from USITC API for USA
+    if (destination === 'USA' || destination === 'US') {
+      try {
+        const searchCode = cleanCode.substring(0, Math.min(10, cleanCode.length));
+        const response = await fetch(
+          `https://hts.usitc.gov/reststop/hts?search=${searchCode}&format=json`,
+          { headers: { 'Accept': 'application/json' } }
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.results && data.results.length > 0) {
+            const result = data.results[0];
+            const generalRate = result.general || '0';
+            const rateMatch = generalRate.match(/(\d+\.?\d*)/);
+            const dutyRate = rateMatch ? parseFloat(rateMatch[1]) : 0;
+
+            // Cache the result
+            await supabase.from('tariff_rates').insert({
+              hs_code: cleanCode,
+              country_origin: origin,
+              country_destination: destination,
+              duty_rate: dutyRate,
+              duty_type: 'MFN',
+              rate_unit: generalRate.includes('%') ? '%' : generalRate,
+              effective_date: new Date().toISOString().split('T')[0],
+              source: 'USITC',
+              source_url: `https://hts.usitc.gov/?query=${searchCode}`,
+              notes: `Special rates: ${result.special || 'N/A'}`,
+              last_verified: new Date().toISOString()
+            });
+
+            return {
+              dutyRate,
+              rateUnit: generalRate.includes('%') ? '%' : generalRate,
+              source: 'USITC',
+              isVerified: true
+            };
+          }
+        }
+      } catch (err) {
+        console.error('USITC API error:', err);
+      }
+    }
+
+    // Return cached even if old, or null
+    if (cached) {
+      return {
+        dutyRate: parseFloat(cached.duty_rate),
+        rateUnit: cached.rate_unit,
+        source: cached.source,
+        isVerified: false
+      };
+    }
+
+    return null;
+  } catch (err) {
+    console.error('Error fetching tariff rate:', err);
+    return null;
+  }
 }
 
 const SYSTEM_PROMPT = `You are a world-class customs classification expert with 30+ years experience applying WCO General Rules of Interpretation (GRI) across ALL HS chapters (01-99). You handle edge cases, composite goods, and complex classification scenarios with precision.
@@ -262,6 +374,44 @@ Active analysis modes: ${requestData.activeModes.join(', ')}`;
         .trim();
 
       const result: ClassificationResult = JSON.parse(cleanedContent);
+
+      // Fetch real tariff rates from APIs
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+      if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+
+        // Update duties with real rates
+        const updatedDuties = await Promise.all(
+          result.duties.map(async (duty) => {
+            const countryCode = extractCountryCode(duty.country);
+            const originCountry = requestData.country || "CN";
+
+            const tariffRate = await fetchTariffRate(
+              supabase,
+              result.hs_code,
+              originCountry,
+              countryCode
+            );
+
+            if (tariffRate && tariffRate.isVerified) {
+              return {
+                country: duty.country,
+                rate: formatRate(tariffRate.dutyRate, tariffRate.rateUnit),
+                note: tariffRate.source === 'API_UNAVAILABLE'
+                  ? 'Estimated - API unavailable'
+                  : `Verified via ${tariffRate.source}`,
+                verified: tariffRate.isVerified
+              };
+            }
+
+            return { ...duty, verified: false };
+          })
+        );
+
+        result.duties = updatedDuties;
+      }
 
       return new Response(
         JSON.stringify(result),

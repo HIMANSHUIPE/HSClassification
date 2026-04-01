@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy, ExternalLink } from 'lucide-react';
+import { Copy, ExternalLink, CheckCircle, AlertCircle } from 'lucide-react';
 
 interface ClassificationResult {
   hs_code: string;
@@ -8,7 +8,7 @@ interface ClassificationResult {
   country_code: string | null;
   alternatives: Array<{ code: string; reason: string; conf: number }>;
   gri_steps: Array<{ rule: string; title: string; verdict: string }>;
-  duties: Array<{ country: string; rate: string; note?: string | null }>;
+  duties: Array<{ country: string; rate: string; note?: string | null; verified?: boolean }>;
   risks: Array<{ icon: string; text: string; level: 'low' | 'medium' | 'high' }>;
   similar: Array<{ code: string; desc: string }>;
 }
@@ -200,17 +200,43 @@ export default function ResultsPanel({ result, isLoading, activeModes, onSendPro
           <div className="bg-white border border-gray-200 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-medium text-gray-900">Duty rate snapshot</h3>
-              <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded border border-blue-200">
-                Live rates may vary
-              </span>
+              <div className="flex items-center space-x-2">
+                {result.duties.some(d => d.verified) && (
+                  <span className="px-2 py-1 bg-green-50 text-green-700 text-xs font-medium rounded border border-green-200 flex items-center space-x-1">
+                    <CheckCircle className="w-3 h-3" />
+                    <span>Verified rates available</span>
+                  </span>
+                )}
+                {!result.duties.every(d => d.verified) && (
+                  <span className="px-2 py-1 bg-amber-50 text-amber-700 text-xs font-medium rounded border border-amber-200">
+                    Some rates estimated
+                  </span>
+                )}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               {result.duties.map((duty, index) => (
-                <div key={index} className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-                  <div className="text-xs text-gray-500 mb-1">{duty.country}</div>
+                <div
+                  key={index}
+                  className={`p-4 border rounded-lg ${
+                    duty.verified
+                      ? 'bg-green-50 border-green-200'
+                      : 'bg-gray-50 border-gray-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-xs text-gray-500">{duty.country}</div>
+                    {duty.verified ? (
+                      <CheckCircle className="w-3.5 h-3.5 text-green-600" title="Verified from official source" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600" title="AI estimated" />
+                    )}
+                  </div>
                   <div className="text-xl font-semibold text-gray-900 mb-1">{duty.rate}</div>
                   {duty.note && (
-                    <div className="text-xs text-green-600">{duty.note}</div>
+                    <div className={`text-xs ${duty.verified ? 'text-green-700' : 'text-gray-600'}`}>
+                      {duty.note}
+                    </div>
                   )}
                 </div>
               ))}
